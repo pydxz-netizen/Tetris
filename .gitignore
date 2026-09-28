@@ -1,0 +1,8 @@
+# Python 运行产物
+.venv/
+__pycache__/
+*.pyc
+
+# 系统文件
+Thumbs.db
+.DS_Store

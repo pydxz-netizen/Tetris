@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>俄罗斯方块</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="stage">
+    <canvas id="board"></canvas>
+    <aside>
+      <div class="card"><h3>分数</h3><div class="num" id="score">0</div></div>
+      <div class="card"><h3>难度</h3><div class="num" id="difficulty">1</div></div>
+      <div class="card"><h3>消行</h3><div class="num" id="lines">0</div></div>
+      <div class="card" id="nextCard"><h3>下一个</h3><canvas id="next"></canvas></div>
+      <div class="card help">
+        <b>← →</b> 移动<br>
+        <b>↑</b> 旋转　<b>↓</b> 加速<br>
+        <b>空格</b> 直接落底<br>
+        <b>P</b> 暂停 / 继续<br>
+        <b>R</b> 重新开始<br>
+        <b>E</b> 退出游戏<br>
+      </div>
+    </aside>
+  </div>
+
+  <div id="overlay" class="opaque">
+    <!-- 开始界面 -->
+    <div class="panel show" id="panelStart">
+      <h1>俄罗斯方块</h1>
+      <p>消除整行方块得分，难度越高下落越快</p>
+      <p>方向键移动与旋转，空格直接落底，按住 ←/→ 持续移动</p>
+      <div class="controls">
+        <label class="ctl">难度
+          <select id="difficultySel"></select>
+        </label>
+      </div>
+      <button id="btnStart">开始游戏</button>
+      <!-- 预设选项按钮（点击只设置难度与勾选，不开始游戏），由 /api/config 生成 -->
+      <div id="presetRow" class="preset-row"></div>
+      <!-- “选择特殊方块”按钮：点击展开/收起下方勾选框区 -->
+      <button id="btnSpecial" class="secondary small-btn">选择特殊方块</button>
+      <div id="specialBox" class="special-box"></div>
+    </div>
+    <!-- 暂停界面 -->
+    <div class="panel" id="panelPause">
+      <h2>已暂停</h2>
+      <p>按 P 键继续游戏</p>
+      <button id="btnExit">退出游戏</button>
+    </div>
+    <!-- 结束界面 -->
+    <div class="panel" id="panelOver">
+      <h2>游戏结束</h2>
+      <p class="final" id="finalText">得分 0　消行 0　难度 1</p>
+      <button id="btnRestart">再来一局</button>
+      <button id="btnOverExit" class="secondary">退出游戏</button>
+    </div>
+  </div>
+
+  <!-- 倒计时大字（准备 / 开始！） -->
+  <div id="countdown"></div>
+  <!-- 背景音乐（按状态与难度切换，由脚本控制） -->
+  <audio id="bgm" loop preload="auto"></audio>
+  <!-- 开始界面右下角水印（仅开始界面显示） -->
+  <div class="watermark show">本游戏为AI辅助生成，版权归飘逸小猪所有<br>如有问题请联系邮箱c1067958@163.com</div>
+
+<script>
+/* 界面脚本：只负责显示（画布渲染、界面切换）、把输入转发给服务器、播放音效。
+   全部游戏机制（移动、旋转、碰撞、消行、计分、升级）都在 game_logic.py 中。 */
+(function () {
+  'use strict';
+
+  var COLS = 10, ROWS = 23;
+  var PANEL_OF_STATE = { start: 'panelStart', paused: 'panelPause', over: 'panelOver',
+                         playing: null, countdown: null };
+
+  var boardCanvas = document.getElementById('board');
+  var nextCanvas  = document.getElementById('next');
+  var ctx  = boardCanvas.getContext('2d');
+  var nctx = nextCanvas.getContext('2d');
+  var scoreEl = document.getElementById('score');
+  var diffEl = document.getElementById('difficulty');
+  var linesEl = document.getElementById('lines');
+  var finalText = document.getElementById('finalText');
+  var overlay = document.getElementById('overlay');
+
+  var CELL = 24;
+  var shownPanel = 'panelStart';
+  var state = 'start';
+  var nextPiece = null;
+  var cdEl = document.getElementById('countdown');        // 倒计时大字（准备/开始！）
+  var watermark = document.querySelector('.watermark');   // 开始界面右下角水印
+  var lastPhase = null;                                   // 上一帧的倒计时阶段
+  var bgmEl = document.getElementById('bgm');             // 背景音乐
+  var bgmKey = null;                                      // 正在播放的 BGM 标记
+  var BGM_VOLUME = 0.6;                                   // BGM 音量（0~1，相对原曲音量的比例）
+  var TEX = {};                                           // 灰烬方块贴图 { 类型名: Image }
+  var FX_IMG = {};                                        // 爆炸特效贴图（加载后抠白底）
+  ['explotion', 'blaze'].forEach(function (name) {
+    var img = new Image();
+    img.onload = function () { FX_IMG[name] = stripWhite(img); };
+    img.src = '/icon/' + name + '.png';
+  });
+  function stripWhite(img) {
+    /* 把贴图中接近白色的像素（每通道 ≥ 235）抠成透明，去掉白底 */
+    var c = document.createElement('canvas');
+    c.width = img.naturalWidth;
+    c.height = img.naturalHeight;
+    var cx = c.getContext('2d');
+    cx.drawImage(img, 0, 0);
+    var d = cx.getImageData(0, 0, c.width, c.height);
+    var px = d.data;
+    for (var i = 0; i < px.length; i += 4) {
+      if (px[i] >= 235 && px[i + 1] >= 235 && px[i + 2] >= 235) px[i + 3] = 0;
+    }
+    cx.putImageData(d, 0, 0);
+    return c;
+  }
+
+  /* ---------- 音效（WebAudio 实时合成，无需音频文件） ---------- */
+  var audioCtx = null;
+  function ensureAudio() {
+    var AC = window.AudioContext || window.webkitAudioContext;
+    if (!audioCtx && AC) {
+      audioCtx = new AC();
+      loadSfxFiles();               // 上下文就绪后开始加载文件音效
+    }
+    if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+  }
+  var SFX_FILES = {                 // 使用音频文件的音效（dur=null 表示全部时长）
+    land:   { url: '/bgm/fall.wav',   dur: 0.4 },   // 方块落定：只取前 0.4 秒
+    bomb:   { url: '/bgm/bomb.wav',   dur: null },
+    pepper: { url: '/bgm/pepper.wav', dur: null },
+  };
+  var sfxBuf = {};                  // 已解码的文件音效 { 名字: AudioBuffer|false }
+  function loadSfxFiles() {
+    Object.keys(SFX_FILES).forEach(function (k) {
+      if (sfxBuf[k] !== undefined) return;            // 已加载/加载中/已失败
+      sfxBuf[k] = null;                               // 标记为加载中
+      fetch(SFX_FILES[k].url)
+        .then(function (r) { return r.arrayBuffer(); })
+        .then(function (b) { return audioCtx.decodeAudioData(b); })
+        .then(function (buf) { sfxBuf[k] = buf; })
+        .catch(function () { sfxBuf[k] = false; });   // 失败则回退合成音效
+    });
+  }
+  function playFile(name, t) {
+    /* 播放文件音效，成功返回 true；未加载或失败返回 false 走合成回退 */
+    var buf = sfxBuf[name];
+    if (!audioCtx || !buf) return false;
+    var src = audioCtx.createBufferSource();
+    src.buffer = buf;
+    src.connect(audioCtx.destination);
+    src.start(t, 0, SFX_FILES[name].dur || undefined);
+    return true;
+  }
+  function tone(freq, dur, type, vol, when, freqEnd) {
+    var osc = audioCtx.createOscillator();
+    var gain = audioCtx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, when);
+    if (freqEnd) osc.frequency.exponentialRampToValueAtTime(freqEnd, when + dur);
+    gain.gain.setValueAtTime(vol, when);
+    gain.gain.exponentialRampToValueAtTime(0.001, when + dur);
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.start(when);
+    osc.stop(when + dur + 0.02);
+  }
+  function noise(dur, vol, cutoff, when, sputter) {
+    /* 噪声（低通滤波 + 衰减包络），sputter=True 加 13Hz 起伏模拟火焰噼啪 */
+    var n = Math.floor(audioCtx.sampleRate * dur);
+    var buf = audioCtx.createBuffer(1, n, audioCtx.sampleRate);
+    var d = buf.getChannelData(0);
+    for (var i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
+    var src = audioCtx.createBufferSource();
+    src.buffer = buf;
+    var flt = audioCtx.createBiquadFilter();
+    flt.type = 'lowpass';
+    flt.frequency.value = cutoff;
+    var gain = audioCtx.createGain();
+    gain.gain.setValueAtTime(vol, when);
+    gain.gain.exponentialRampToValueAtTime(0.001, when + dur);
+    src.connect(flt); flt.connect(gain); gain.connect(audioCtx.destination);
+    src.start(when);
+    src.stop(when + dur + 0.02);
+    if (sputter) {
+      var lfo = audioCtx.createOscillator();
+      lfo.frequency.value = 13;
+      var lfoGain = audioCtx.createGain();
+      lfoGain.gain.value = vol * 0.45;
+      lfo.connect(lfoGain); lfoGain.connect(gain.gain);
+      lfo.start(when);
+      lfo.stop(when + dur);
+    }
+  }
+  function playSound(name) {
+    ensureAudio();
+    if (!audioCtx) return;
+    var t = audioCtx.currentTime;
+    switch (name) {
+      case 'click':                                   // 按钮点击（所有按钮共用）
+        tone(880, 0.07, 'square', 0.12, t);
+        break;
+      case 'fall':                                    // 方块下落一格
+        tone(190, 0.05, 'triangle', 0.06, t);
+        break;
+      case 'rotate':                                  // 旋转
+        tone(660, 0.06, 'square', 0.10, t, 990);
+        break;
+      case 'harddrop':                                // 空格直接落底（特殊音效）
+        tone(520, 0.14, 'sawtooth', 0.14, t, 130);
+        break;
+      case 'clear': {                                 // 消除整行
+        tone(523, 0.10, 'square', 0.12, t);
+        tone(659, 0.10, 'square', 0.12, t + 0.08);
+        tone(784, 0.18, 'square', 0.12, t + 0.16);
+        break;
+      }
+      case 'bonus': {                                 // 简单特殊方块出现（清脆双音铃，与消行音效区分开）
+        tone(1318, 0.10, 'sine', 0.16, t);
+        tone(1568, 0.24, 'sine', 0.16, t + 0.11);
+        break;
+      }
+      case 'penalty': {                               // 复杂特殊方块出现（惩罚音效）
+        tone(220, 0.16, 'sawtooth', 0.14, t, 180);
+        tone(160, 0.28, 'sawtooth', 0.14, t + 0.16, 110);
+        break;
+      }
+      case 'ready': {                                 // 倒计时“准备”（两声短音）
+        tone(660, 0.10, 'sine', 0.15, t);
+        tone(660, 0.10, 'sine', 0.15, t + 0.16);
+        break;
+      }
+      case 'go':                                      // 倒计时“开始！”（高音上滑长鸣）
+        tone(880, 0.35, 'square', 0.14, t, 1320);
+        break;
+      case 'land':                                    // 方块落定（fall.wav 前 0.4 秒）
+        if (playFile('land', t)) break;
+        tone(300, 0.07, 'sine', 0.22, t, 150);        // 文件未就绪时的合成回退
+        tone(1300, 0.03, 'square', 0.05, t);
+        break;
+      case 'bomb': {                                  // 炸弹方块爆炸（bomb.wav 全部时长）
+        if (playFile('bomb', t)) break;
+        noise(0.52, 0.55, 320, t);                    // 文件未就绪时的合成回退
+        tone(95, 0.44, 'sine', 0.38, t, 38);
+        break;
+      }
+      case 'pepper': {                                // 辣椒方块燃烧（pepper.wav 全部时长）
+        if (playFile('pepper', t)) break;
+        noise(0.68, 0.42, 900, t, true);              // 文件未就绪时的合成回退
+        tone(230, 0.62, 'sawtooth', 0.12, t, 90);
+        break;
+      }
+    }
+  }
+
+  /* ---------- 背景音乐（按状态与难度切换曲目） ---------- */
+  function updateBgm(s) {
+    var key;
+    if (s.state === 'start') {
+      key = 'bgm/start_bgm.mp3';
+    } else if (s.state === 'countdown' || s.state === 'playing' || s.state === 'paused') {
+      var d = s.difficulty;
+      var track = d <= 5 ? 'relaxation_bgm.mp3'
+                : d <= 9 ? 'experience_bgm.mp3'
+                : d <= 14 ? 'challenge_bgm.mp3' : 'insanity_bgm.mp3';
+      key = 'bgm/' + track;
+    } else {                                          // over：立刻停止
+      key = null;
+    }
+    if (key === bgmKey) return;
+    bgmKey = key;
+    if (!key) { bgmEl.pause(); return; }
+    bgmEl.src = key;
+    bgmEl.volume = BGM_VOLUME;                        // 音量降低为原来的 60%
+    var p = bgmEl.play();
+    if (p && p.catch) p.catch(function () {});        // 自动播放被拦时静默失败
+  }
+
+  /* ---------- 与 Python 游戏逻辑通信 ---------- */
+  function sendCommand(action, extra) {
+    var body = { action: action };
+    if (extra) for (var k in extra) body[k] = extra[k];
+    fetch('/api/command', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    }).catch(function () {});
+  }
+
+  /* 开始游戏：把开始界面选择的难度和勾选的特殊方块键名列表发给服务器 */
+  function sendStart() {
+    var keys = [];
+    document.querySelectorAll('#specialBox input[type="checkbox"]').forEach(function (cb) {
+      if (cb.checked) keys.push(cb.getAttribute('data-key'));
+    });
+    sendCommand('start', {
+      difficulty: parseInt(document.getElementById('difficultySel').value, 10) || 1,
+      keys: keys
+    });
+  }
+
+  var fetching = false;
+  function poll() {
+    if (fetching) return;
+    fetching = true;
+    fetch('/api/state')
+      .then(function (r) { return r.json(); })
+      .then(function (s) { fetching = false; applyState(s); })
+      .catch(function () { fetching = false; });
+  }
+
+  function applyState(s) {
+    if (s.events && s.events.length) {                // 播放本帧的音效（同类只播一次）
+      var played = {};
+      s.events.forEach(function (ev) {
+        if (!played[ev]) { played[ev] = true; playSound(ev); }
+      });
+    }
+    updateBgm(s);                                     // 按状态与难度切换背景音乐
+    if (s.phase !== lastPhase) {                      // 倒计时阶段变化：大字 + 音效
+      lastPhase = s.phase;
+      if (s.phase === 'ready' || s.phase === 'go') {
+        placeCountdown();
+        cdEl.textContent = s.phase === 'ready' ? '准备' : '开始！';
+        cdEl.classList.remove('pop');
+        void cdEl.offsetWidth;                        // 重置 CSS 动画
+        cdEl.classList.add('show', 'pop');
+        playSound(s.phase);
+      } else {
+        cdEl.classList.remove('show', 'pop');
+      }
+    }
+    scoreEl.textContent = s.score;
+    diffEl.textContent = s.difficulty;
+    linesEl.textContent = s.lines;
+    nextPiece = s.next;
+    drawNext();
+    state = s.state;
+
+    var want = PANEL_OF_STATE[state];
+    if (want !== shownPanel) {
+      if (want === 'panelOver')
+        finalText.textContent = '得分 ' + s.score + '　消行 ' + s.lines + '　难度 ' + s.difficulty;
+      showPanel(want);
+      shownPanel = want;
+    }
+    render(s);
+  }
+
+  function showPanel(name) {
+    ['panelStart', 'panelPause', 'panelOver'].forEach(function (id) {
+      document.getElementById(id).classList.toggle('show', id === name);
+    });
+    overlay.classList.toggle('hidden', !name);
+    overlay.classList.toggle('opaque', name === 'panelStart');   // 开始界面背景完全不透明
+    watermark.classList.toggle('show', name === 'panelStart');   // 水印只在开始界面显示
+  }
+
+  /* ---------- 画布渲染 ---------- */
+  function ashTex(type) {
+    /* 灰烬方块贴图（加载完成才返回，否则退回色块渲染） */
+    var img = TEX[type];
+    return (img && img.complete && img.naturalWidth > 0) ? img : null;
+  }
+  function drawCell(c, x, y, size, color, ghost, tex) {
+    if (ghost) {
+      c.globalAlpha = 0.45;
+      c.strokeStyle = color;
+      c.lineWidth = Math.max(1.5, size * 0.08);
+      c.strokeRect(x + size * 0.12, y + size * 0.12, size * 0.76, size * 0.76);
+      c.globalAlpha = 1;
+      return;
+    }
+    if (tex) {                     // 灰烬方块：保持比例完整放入格子，居中
+      var k = size / Math.max(tex.naturalWidth, tex.naturalHeight);
+      var w = tex.naturalWidth * k, h = tex.naturalHeight * k;
+      c.drawImage(tex, x + (size - w) / 2, y + (size - h) / 2, w, h);
+      return;
+    }
+    c.fillStyle = color;
+    c.fillRect(x, y, size, size);
+    c.fillStyle = 'rgba(255,255,255,.35)';
+    c.fillRect(x, y, size, Math.max(2, size * 0.1));
+    c.fillRect(x, y, Math.max(2, size * 0.1), size);
+    c.fillStyle = 'rgba(0,0,0,.28)';
+    c.fillRect(x, y + size - Math.max(2, size * 0.1), size, Math.max(2, size * 0.1));
+    c.fillRect(x + size - Math.max(2, size * 0.1), y, Math.max(2, size * 0.1), size);
+  }
+
+  function render(s) {
+    var w = CELL * COLS, h = CELL * ROWS;
+    ctx.fillStyle = '#0d1326';
+    ctx.fillRect(0, 0, w, h);
+    ctx.strokeStyle = 'rgba(255,255,255,.05)';
+    ctx.lineWidth = 1;
+    for (var gx = 1; gx < COLS; gx++) {
+      ctx.beginPath(); ctx.moveTo(gx * CELL + .5, 0); ctx.lineTo(gx * CELL + .5, h); ctx.stroke();
+    }
+    for (var gy = 1; gy < ROWS; gy++) {
+      ctx.beginPath(); ctx.moveTo(0, gy * CELL + .5); ctx.lineTo(w, gy * CELL + .5); ctx.stroke();
+    }
+    for (var y = 0; y < ROWS; y++)
+      for (var x = 0; x < COLS; x++)
+        if (s.board[y][x]) drawCell(ctx, x * CELL, y * CELL, CELL, s.board[y][x]);
+
+    if (s.cur && s.state === 'playing') {
+      var ctex = ashTex(s.cur.type);          // 灰烬方块用贴图渲染
+      if (s.ghost > 0) {
+        s.cur.shape.forEach(function (row, yy) {
+          row.forEach(function (v, xx) {
+            if (v && s.cur.y + yy + s.ghost >= 0)
+              drawCell(ctx, (s.cur.x + xx) * CELL, (s.cur.y + yy + s.ghost) * CELL,
+                       CELL, s.cur.color, true);
+          });
+        });
+      }
+      s.cur.shape.forEach(function (row, yy) {
+        row.forEach(function (v, xx) {
+          if (v && s.cur.y + yy >= 0)
+            drawCell(ctx, (s.cur.x + xx) * CELL, (s.cur.y + yy) * CELL, CELL,
+                     s.cur.color, false, ctex);
+        });
+      });
+    }
+
+    // 爆炸特效：贴图拉伸到影响范围大小，保留期内线性渐隐
+    (s.fx || []).forEach(function (f) {
+      var img = FX_IMG[f.img];          // 已抠白底的离屏 canvas（未加载完则无）
+      if (!img) return;
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, 1 - f.age / 0.8);
+      ctx.drawImage(img, f.x0 * CELL, f.y0 * CELL,
+                    (f.x1 - f.x0 + 1) * CELL, (f.y1 - f.y0 + 1) * CELL);
+      ctx.restore();
+    });
+  }
+
+  function drawNext() {
+    var size = nctx.canvas.width / (window.devicePixelRatio || 1);
+    nctx.clearRect(0, 0, size, size);
+    if (!nextPiece) return;
+    var shape = nextPiece.shape;
+    var tex = ashTex(nextPiece.type);         // 灰烬方块用贴图渲染
+    var grid = Math.max(4, shape.length);   // 形状超过 4×4 时自动缩小预览格子
+    var cell = size / grid;
+    var off = (grid - shape.length) / 2 * cell;
+    shape.forEach(function (row, y) {
+      row.forEach(function (v, x) {
+        if (v) drawCell(nctx, off + x * cell, off + y * cell, cell,
+                        nextPiece.color, false, tex);
+      });
+    });
+  }
+
+  /* ---------- 自适应窗口大小 ---------- */
+  function setupCanvas(cv, c) {
+    var dpr = window.devicePixelRatio || 1;
+    cv.width = Math.round(c.width * dpr);
+    cv.height = Math.round(c.height * dpr);
+    cv.style.width = c.width + 'px';
+    cv.style.height = c.height + 'px';
+    cv.getContext('2d').setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  function resize() {
+    var margin = 16, gap = 12;
+    var sideW = Math.max(132, Math.min(190, Math.floor(window.innerHeight * 0.17)));
+    var cell = Math.floor(Math.min(
+      (window.innerHeight - 2 * margin) / ROWS,
+      (window.innerWidth - 2 * margin - gap - sideW) / COLS
+    ));
+    cell = Math.max(10, cell);
+    CELL = cell;
+    setupCanvas(boardCanvas, { width: cell * COLS, height: cell * ROWS });
+    setupCanvas(nextCanvas,  { width: cell * 4, height: cell * 4 });
+    document.querySelector('aside').style.width = sideW + 'px';
+    drawNext();
+    placeCountdown();
+  }
+
+  /* ---------- 输入：把按键转发给游戏逻辑 ---------- */
+  var GAME_KEYS = { ArrowLeft: 1, ArrowRight: 1, ArrowUp: 1, ArrowDown: 1, ' ': 1 };
+  var softHeld = false;   // 是否已发过 softstart（防止键盘重复触发重复发送）
+  var moveHeld = false;   // 是否已发过 leftstart/rightstart（防止键盘重复发送）
+  document.addEventListener('keydown', function (e) {
+    if (GAME_KEYS[e.key]) e.preventDefault();
+    ensureAudio();
+    if (state === 'start' || state === 'over') {
+      if (e.key === 'Enter' || e.key === ' ') sendStart();
+      return;
+    }
+    if (e.key === 'p' || e.key === 'P') { sendCommand('pause'); return; }
+    if (state !== 'playing') return;
+    switch (e.key) {
+      case 'ArrowLeft':                        // 按住 ←：开始持续左移
+        if (!moveHeld) { moveHeld = true; sendCommand('leftstart'); }
+        break;
+      case 'ArrowRight':                       // 按住 →：开始持续右移
+        if (!moveHeld) { moveHeld = true; sendCommand('rightstart'); }
+        break;
+      case 'ArrowDown':
+        if (!softHeld) { softHeld = true; sendCommand('softstart'); }
+        break;
+      case 'ArrowUp': case 'x': case 'X': sendCommand('rotate'); break;
+      case 'r': case 'R': sendStart(); break;
+      case 'e': case 'E': sendCommand('exit'); break;
+      case ' ':          sendCommand('harddrop'); break;
+    }
+  });
+  document.addEventListener('keyup', function (e) {
+    if (e.key === 'ArrowDown' && softHeld) {   // 松开 ↓：结束软降加速
+      softHeld = false;
+      sendCommand('softstop');
+    }
+    if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && moveHeld) {
+      moveHeld = false;                        // 松开 ←/→：结束持续横移
+      sendCommand('movestop');
+    }
+  });
+
+  function bindButton(id, action) {
+    document.getElementById(id).addEventListener('click', function () {
+      ensureAudio();
+      playSound('click');                 // 所有按钮共用同一个点击音效
+      sendCommand(action);
+    });
+  }
+  document.getElementById('btnStart').addEventListener('click', function () {
+    ensureAudio();
+    playSound('click');
+    sendStart();
+  });
+  document.getElementById('btnRestart').addEventListener('click', function () {
+    ensureAudio();
+    playSound('click');
+    sendStart();
+  });
+  bindButton('btnExit', 'exit');          // 暂停界面：退出并返回主界面
+  bindButton('btnOverExit', 'exit');      // 结束界面：退出并返回主界面
+
+  /* “选择特殊方块”按钮：展开 / 收起勾选框区 */
+  document.getElementById('btnSpecial').addEventListener('click', function () {
+    ensureAudio();
+    playSound('click');
+    document.getElementById('specialBox').classList.toggle('open');
+  });
+
+  /* ---------- 从服务器取预设选项与特殊方块勾选框定义并生成控件 ---------- */
+  (function loadConfig() {
+    fetch('/api/config')
+      .then(function (r) { return r.json(); })
+      .then(function (cfg) {
+        var prow = document.getElementById('presetRow');
+        cfg.presets.forEach(function (p) {          // 预设按钮：只设置难度与勾选
+          var b = document.createElement('button');
+          b.type = 'button';
+          b.className = 'preset-btn';
+          b.textContent = p.name;
+          b.addEventListener('click', function () {
+            ensureAudio();
+            playSound('click');
+            document.getElementById('difficultySel').value = p.difficulty;
+            document.querySelectorAll('#specialBox input[type="checkbox"]')
+              .forEach(function (cb) {
+                cb.checked = p.keys.indexOf(cb.getAttribute('data-key')) >= 0;
+              });
+          });
+          prow.appendChild(b);
+        });
+        var box = document.getElementById('specialBox');
+        cfg.ashTex = cfg.ashTex || {};
+        Object.keys(cfg.ashTex).forEach(function (t) {   // 预载灰烬方块贴图
+          var img = new Image();
+          img.src = '/icon/' + cfg.ashTex[t];
+          TEX[t] = img;
+        });
+        cfg.options.forEach(function (o) {          // 特殊方块勾选框（两列网格）
+          var lab = document.createElement('label');
+          lab.className = 'ctl';
+          var cb = document.createElement('input');
+          cb.type = 'checkbox';
+          cb.setAttribute('data-key', o.key);
+          if (o.ash) cb.className = 'ash';          // 灰烬方块：蓝色勾选
+          lab.appendChild(cb);
+          lab.appendChild(document.createTextNode(o.label));
+          box.appendChild(lab);
+        });
+      })
+      .catch(function () {});
+  })();
+
+  /* 倒计时大字定位到场地中央（跟随画布位置） */
+  function placeCountdown() {
+    var r = boardCanvas.getBoundingClientRect();
+    cdEl.style.left = (r.left + r.width / 2) + 'px';
+    cdEl.style.top = (r.top + r.height * 0.45) + 'px';
+  }
+
+  /* ---------- 开始界面的难度下拉框：填充 1~20 ---------- */
+  (function fillDifficulty() {
+    var sel = document.getElementById('difficultySel');
+    for (var i = 1; i <= 20; i++) {
+      var opt = document.createElement('option');
+      opt.value = i;
+      opt.textContent = i;
+      sel.appendChild(opt);
+    }
+  })();
+
+  /* ---------- 启动 ---------- */
+  window.addEventListener('resize', resize);
+  resize();
+  (function loop() { poll(); requestAnimationFrame(loop); })();
+})();
+</script>
+</body>
+</html>

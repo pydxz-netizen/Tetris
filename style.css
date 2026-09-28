@@ -1,0 +1,262 @@
+/* 俄罗斯方块 —— 界面设计（样式部分） */
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: radial-gradient(circle at 50% 20%, #1b2444 0%, #0c1022 60%, #070a16 100%);
+  color: #e8ecf8;
+  font-family: "Microsoft YaHei", "PingFang SC", Arial, sans-serif;
+  user-select: none;
+}
+
+#stage {
+  display: flex;
+  gap: 12px;
+  align-items: stretch;
+}
+
+#board {
+  display: block;
+  background: #0d1326;
+  border: 2px solid rgba(255, 255, 255, .18);
+  border-radius: 8px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, .5);
+}
+
+aside {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.card {
+  background: rgba(255, 255, 255, .07);
+  border: 1px solid rgba(255, 255, 255, .12);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.card h3 {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: normal;
+  letter-spacing: 2px;
+  color: #9fb0d8;
+}
+.card .num {
+  font-size: 26px;
+  font-weight: bold;
+  line-height: 1.1;
+}
+#nextCard { text-align: center; }
+#next { display: block; margin: 2px auto 0; }
+
+.help { font-size: 12px; line-height: 1.9; color: #b8c4e2; }
+.help b { color: #8fd3ff; font-weight: normal; }
+kbd {
+  display: inline-block;
+  min-width: 18px;
+  padding: 1px 5px;
+  margin-right: 4px;
+  text-align: center;
+  font-size: 11px;
+  color: #dce6ff;
+  background: rgba(255, 255, 255, .12);
+  border: 1px solid rgba(255, 255, 255, .25);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+}
+
+/* 遮罩与三个界面 */
+#overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(8, 10, 22, .72);
+  backdrop-filter: blur(5px);
+  z-index: 10;
+}
+#overlay.hidden { display: none; }
+/* 开始界面：背景完全不透明 */
+#overlay.opaque {
+  background: #0a0e1c;
+  backdrop-filter: none;
+}
+.panel { display: none; text-align: center; padding: 36px 48px; }
+.panel.show { display: block; }
+
+/* 开始界面：占满整列，标题贴最上方，其余控件依次上移排开 */
+#panelStart.show {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  align-self: stretch;
+  padding: 4vh 48px 36px;
+  overflow-y: auto;
+}
+.panel h1 {
+  margin: 0 0 10px;
+  font-size: 52px;
+  letter-spacing: 10px;
+  text-indent: 10px;
+  background: linear-gradient(90deg, #22d3ee, #a855f7, #f97316);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.panel h2 { margin: 0 0 14px; font-size: 34px; letter-spacing: 6px; }
+.panel p { margin: 5px 0; color: #b8c4e2; font-size: 13px; line-height: 1.8; }
+.panel .final { font-size: 16px; color: #ffd76a; margin: 12px 0 18px; }
+
+/* 开始界面：难度下拉框 + 特殊方块勾选框 */
+.controls {
+  margin: 18px auto 4px;
+  display: inline-flex;
+  flex-direction: column;
+  gap: 10px;
+  text-align: left;
+}
+.ctl {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: #dce6ff;
+  cursor: pointer;
+}
+.ctl select {
+  padding: 5px 9px;
+  font-size: 14px;
+  color: #e8ecf8;
+  background: rgba(255, 255, 255, .10);
+  border: 1px solid rgba(255, 255, 255, .28);
+  border-radius: 6px;
+  outline: none;
+  cursor: pointer;
+}
+.ctl select option { background: #141a30; color: #e8ecf8; }
+.ctl input[type="checkbox"] {
+  width: 17px;
+  height: 17px;
+  accent-color: #8b5cf6;
+  cursor: pointer;
+}
+/* 灰烬方块勾选框：选中后用蓝色表示 */
+.ctl input[type="checkbox"].ash { accent-color: #2563eb; }
+
+/* 预设选项按钮排（开始游戏按钮下方） */
+.preset-row {
+  margin-top: 16px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 7px;
+  max-width: 500px;
+}
+.preset-btn {
+  margin: 0;
+  padding: 5px 12px;
+  font-size: 12px;
+  letter-spacing: 1px;
+  border-radius: 13px;
+  background: rgba(255, 255, 255, .10);
+  border: 1px solid rgba(255, 255, 255, .25);
+  box-shadow: none;
+}
+.preset-btn:hover { transform: translateY(-1px); box-shadow: none; }
+
+/* “选择特殊方块”小按钮 + 可折叠的勾选框区（默认收起，两列排布） */
+button.small-btn {
+  margin-top: 14px;
+  padding: 6px 16px;
+  font-size: 12px;
+  letter-spacing: 2px;
+  border-radius: 13px;
+  box-shadow: none;
+}
+.special-box {
+  display: none;
+  margin-top: 14px;
+  grid-template-columns: repeat(2, minmax(150px, auto));
+  gap: 7px 26px;
+}
+.special-box.open { display: grid; }
+.special-box .ctl { font-size: 13px; }
+
+button {
+  margin-top: 20px;
+  padding: 9px 36px;
+  font-size: 15px;
+  letter-spacing: 3px;
+  font-weight: normal;
+  color: #fff;
+  background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+  border: none;
+  border-radius: 26px;
+  cursor: pointer;
+  box-shadow: 0 5px 16px rgba(99, 102, 241, .45);
+  transition: transform .12s, box-shadow .12s;
+}
+button:hover { transform: translateY(-2px); box-shadow: 0 8px 22px rgba(99, 102, 241, .6); }
+button:active { transform: translateY(0); }
+
+/* 次级按钮（暂停/结束界面的退出按钮） */
+button.secondary {
+  background: rgba(255, 255, 255, .10);
+  border: 1px solid rgba(255, 255, 255, .28);
+  box-shadow: none;
+}
+button.secondary:hover { box-shadow: 0 6px 18px rgba(255, 255, 255, .08); }
+
+/* 结束界面：两个按钮都缩小、不加粗、间距加大 */
+#panelOver button {
+  margin-top: 16px;
+  padding: 8px 30px;
+  font-size: 14px;
+  letter-spacing: 2px;
+  font-weight: normal;
+  border-radius: 22px;
+}
+#panelOver button.secondary { margin-top: 22px; }
+
+/* 倒计时大字（准备 / 开始！） */
+#countdown {
+  display: none;
+  position: fixed;
+  transform: translate(-50%, -50%);
+  font-size: 64px;
+  font-weight: bold;
+  letter-spacing: 12px;
+  text-indent: 12px;
+  color: #ffd76a;
+  text-shadow: 0 0 26px rgba(255, 215, 106, .55), 0 4px 14px rgba(0, 0, 0, .6);
+  z-index: 30;
+  pointer-events: none;
+}
+#countdown.show { display: block; }
+#countdown.pop { animation: cdpop .45s ease-out; }
+@keyframes cdpop {
+  0% { transform: translate(-50%, -50%) scale(2.2); opacity: 0; }
+  100% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+}
+
+/* 开始界面右下角水印（仅开始界面显示，淡灰色小字） */
+.watermark {
+  display: none;
+  position: fixed;
+  right: 12px;
+  bottom: 8px;
+  font-size: 10px;
+  line-height: 1.6;
+  text-align: right;
+  color: rgba(255, 255, 255, .24);
+  z-index: 20;
+  pointer-events: none;
+}
+.watermark.show { display: block; }
